@@ -1,4 +1,4 @@
-# Script Modeling Spectral Signatures - New Approach
+# 
 
 ```{r}
 #Necessary libraries are loaded
@@ -11,9 +11,11 @@ library(tidyr)
 library(gridExtra)
 ```
 
+## Lectura y Ajuste de los datos
+
 ```{r}
 #Spectral signature data for day 13 is imported
-df=read_xlsx("C:/Users/jorge/OneDrive/Escritorio/Publicaciones/TESIS/Spectral_signatures.xlsx")
+df=read_xlsx("D:/Proyectos/33.LimmaFirmasEspectralesWeights/Modeling_SpectralSignatures/Spectral_signatures.xlsx")
 ```
 
 ```{r}
@@ -38,11 +40,44 @@ results=decideTests(fit[,'NITROGEN'])
 summary(results)
 
 #P-values are extracted from the factors of the empirical Bayes model
-nitro=fit$p.value[,2]
+#nitro=fit$p.value[,2]
 water=fit$p.value[,3]
 inter=fit$p.value[,4]
+
+tableadjust = topTableF(fit, adjust="fdr")
+tableadjust
 ```
 
+```{r}
+# The expression data variable stores a dataframe of the transposed matrix of the imported spectral signature data
+expression_data=as.data.frame(t(df[,3:2153]))
+
+# Design matrix is created to perform analysis of variance or some linear model
+design=model.matrix(~NITROGEN*WATER,data = df)
+
+
+# The model is fitted by inserting the dataframe with the spectral signatures and the created design matrix
+mod2=lmFit(expression_data,design,weights = seq(350,2500))
+
+
+#The results of the statistical model are adjusted using empirical Bayes
+fit2= eBayes(mod2)
+summary(fit2)
+
+
+# Decision tests are performed based on the results of the fitted model in relation to the nitrogen variable
+results2=decideTests(fit2[,'NITROGEN'])
+summary(results2)
+
+#P-values are extracted from the factors of the empirical Bayes model
+#nitro_2=fit2$p.value[,2]
+water_2=fit2$p.value[,3]
+inter_2=fit2$p.value[,4]
+
+tableadjust2 = topTableF(fit2, adjust="fdr")
+nitro=tableadjust2$NITROGEN
+nitro
+```
 
 ```{r}
 # P-values are extracted for the factors for the traditional model
@@ -59,7 +94,7 @@ dim(df)
 #P-values for the interaction are extracted
 inter_2=c()
 for (i in 3:2153) {
-  mod <- summary(aov(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
+  mod <- summary(lm(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
   pvalue=unlist(mod)[[19]]
   inter_2=c(inter_2,pvalue)
 }
@@ -67,7 +102,7 @@ for (i in 3:2153) {
 #P-values for Nitrogen are extracted
 nitro_2=c()
 for (i in 3:2153) {
-  mod <- summary(aov(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
+  mod <- summary(lm(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
   pvalue=unlist(mod)[[17]]
   nitro_2=c(nitro_2,pvalue)
 }
@@ -75,17 +110,24 @@ for (i in 3:2153) {
 #P-values for water are extracted
 water_2=c()
 for (i in 3:2153) {
-  mod <- summary(aov(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
+  mod <- summary(lm(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
   pvalue=unlist(mod)[[18]]
   water_2=c(water_2,pvalue)
 }
 
+
+```
+
+```{r}
+topTable(fit, coef=1, adjust="BH")
+
+```
+
+```{r}
 #All p values of the factors are grouped in a dataframe
 df_graph=data.frame(x=seq(350,2500),nitro,nitro_2,water,water_2,inter,inter_2)
 df_graph
 ```
-
-
 
 **P-Value Behavior Graphs in Different Factors**
 
@@ -96,7 +138,7 @@ ggplot(df_graph,aes(x=x))+
   geom_point(aes(y=nitro_2,color='red'),size=1,shape=16)+
   geom_hline(yintercept = 0.05, color = "darkblue",linetype='dashed') +
   theme_minimal()+
-  scale_color_manual(values = c("#008B8B",'orange'), labels = c( "EBA","CA")) +
+  scale_color_manual(values = c("#008B8B",'orange'), labels = c( "Normal","Weights")) +
   xlab('Wavelength (nm)')+
   ylab("Nitrogen (p-values)")+
   labs(color = "Method")+
@@ -117,6 +159,7 @@ ggplot(df_graph,aes(x=x))+
   labs(color = "Method")+
   theme(plot.title = element_text(hjust = 0.5))
 ```
+
 ```{r}
 #Interaction p values
 
@@ -131,6 +174,7 @@ ggplot(df_graph,aes(x=x))+
   labs(color = "Method")+
   theme(plot.title = element_text(hjust = 0.5))
 ```
+
 ```{r}
 # Nitrogen Matrix
 g1=ggplot(df_graph, aes(x = nitro_2, y = nitro)) +
@@ -148,6 +192,7 @@ g1=ggplot(df_graph, aes(x = nitro_2, y = nitro)) +
   theme_minimal()+
   theme(plot.title = element_text(hjust = 0.5))
 ```
+
 ```{r}
 # Water Matrix
 g2=ggplot(df_graph, aes(x = water_2, y = water)) +
@@ -176,7 +221,6 @@ grid.arrange(
 
 ```
 
-
 ```{r}
 # Interaction Matrix
 ggplot(df_graph, aes(x = inter_2, y = inter)) +
@@ -197,8 +241,8 @@ ggplot(df_graph, aes(x = inter_2, y = inter)) +
   theme(plot.title = element_text(hjust = 0.5))
 ```
 
-
 **Creation of regions for each factor**
+
 ```{r}
 #Interaction regions
 df_inter=data.frame(inter=df_graph$inter,
@@ -215,6 +259,7 @@ df_inter <- df_inter %>%
 
 table(df_inter$region)
 ```
+
 ```{r}
 #Nitrogen regions
 df_nitro=data.frame(nitro=df_graph$nitro,
@@ -230,6 +275,7 @@ df_nitro <- df_nitro %>%
 
 table(df_nitro$region)
 ```
+
 ```{r}
 #Water regions
 df_water=data.frame(water=df_graph$water,
@@ -245,6 +291,7 @@ df_water <- df_water %>%
 
 table(df_water$region)
 ```
+
 ```{r}
 # Extract the nitrogen regions
 zone_A=c()
@@ -450,6 +497,7 @@ ggplot(d_alpha_inter, aes(x = x, y = y, color = zone)) +
 ```
 
 **Graphing of reflectances for treatments**
+
 ```{r}
 df2=df
 
@@ -500,7 +548,9 @@ df2%>%
         legend.title = element_text(size = 8),
         legend.margin = margin(0, 0, 120, -45))
 ```
+
 **Graphing of reflectances for Nitrogen levels**
+
 ```{r}
 df_nit=df[,-c(2)]
 
@@ -529,7 +579,9 @@ df_nit%>%
         legend.position = 'right',
         legend.margin = margin(0,0,180,-45))
 ```
+
 **Graphing of reflectances for Water levels**
+
 ```{r}
 df_wat=df[,-c(1)]
 df_wat=df_wat %>%
@@ -557,6 +609,3 @@ df_wat%>%
         legend.position = 'right',
         legend.margin = margin(0,0,214,-45))
 ```
-
-
-
