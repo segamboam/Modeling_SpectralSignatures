@@ -1,7 +1,7 @@
 # 
 
 ```{r}
-#Necessary libraries are loaded
+#Librerias
 library(limma)
 library(readxl)
 library(ggplot2)
@@ -14,9 +14,46 @@ library(gridExtra)
 ## Lectura y Ajuste de los datos
 
 ```{r}
-#Spectral signature data for day 13 is imported
 df=read_xlsx("D:/Proyectos/33.LimmaFirmasEspectralesWeights/Modeling_SpectralSignatures/Spectral_signatures.xlsx")
+WATER=ifelse(df$WATER=='CW',1,0)
+df$WATER=WATER
 ```
+
+## Modelos lm
+
+```{r}
+#P-values for the interaction are extracted
+nitro_0=c()
+water_0=c()
+inter_0=c()
+for (i in 3:2153) {
+  mod <- summary(lm(df[[i]]~NITROGEN*WATER,data = df))
+  nitro_0=c(nitro_0,mod$coefficients['NITROGEN','Pr(>|t|)'])
+  water_0=c(water_0,mod$coefficients['WATER','Pr(>|t|)'])
+  inter_0=c(inter_0,mod$coefficients['NITROGEN:WATER','Pr(>|t|)'])
+}
+
+#Correccion
+nitro_1 = p.adjust(nitro_0,method = "fdr")
+water_1 = p.adjust(water_0,method = "fdr")
+inter_1 = p.adjust(inter_0,method = "fdr")
+```
+
+```{r}
+#Nitrogen p values
+ggplot(df_graph,aes(x=x))+
+  geom_point(aes(y=-log(nitro, base = 10),color='black'),size=1,shape=16)+
+  geom_point(aes(y=-log(nitro_0, base = 10),color='red'),size=1,shape=16)+
+  geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed') +
+  theme_minimal()+
+  scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Corregido")) +
+  xlab('Wavelength (nm)')+
+  ylab("-log p value (Nitrogen)")+
+  labs(color = "Method")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## Modelo Limma normal
 
 ```{r}
 # The expression data variable stores a dataframe of the transposed matrix of the imported spectral signature data
@@ -32,23 +69,34 @@ mod=lmFit(expression_data,design)
 
 #The results of the statistical model are adjusted using empirical Bayes
 fit= eBayes(mod)
-summary(fit)
+fit_nitro=topTable(fit, coef = 2,adjust.method = "fdr",number=2153)
+fit_water=topTable(fit, coef = 3,adjust.method = "fdr",number=2153)
+fit_inter=topTable(fit, coef = 4,adjust.method = "fdr",number=2153)
 
-
-# Decision tests are performed based on the results of the fitted model in relation to the nitrogen variable
-results=decideTests(fit[,'NITROGEN'])
-summary(results)
 
 #P-values are extracted from the factors of the empirical Bayes model
-#nitro=fit$p.value[,2]
-water=fit$p.value[,3]
-inter=fit$p.value[,4]
+fit_nitro$index=rownames(fit_nitro)
+fit_nitro$index=as.numeric(fit_nitro$index)
+fit_nitro=fit_nitro %>% arrange(index)
+nitro=fit_nitro[,5]
 
-tableadjust = topTableF(fit, adjust="fdr")
-tableadjust
+fit_water$index=rownames(fit_water)
+fit_water$index=as.numeric(fit_water$index)
+fit_water=fit_water %>% arrange(index)
+water=fit_water[,5]
+
+fit_inter$index=rownames(fit_inter)
+fit_inter$index=as.numeric(fit_inter$index)
+fit_inter=fit_inter %>% arrange(index)
+inter=fit_inter[,5]
 ```
 
+## Modelo Limma weights
+
 ```{r}
+esLong = seq(350,2500)
+weightsEs = ifelse(esLong > 1050, 2, 1.4)
+
 # The expression data variable stores a dataframe of the transposed matrix of the imported spectral signature data
 expression_data=as.data.frame(t(df[,3:2153]))
 
@@ -57,90 +105,81 @@ design=model.matrix(~NITROGEN*WATER,data = df)
 
 
 # The model is fitted by inserting the dataframe with the spectral signatures and the created design matrix
-mod2=lmFit(expression_data,design,weights = seq(350,2500))
+mod2=lmFit(expression_data,design,weights = weightsEs)
 
 
 #The results of the statistical model are adjusted using empirical Bayes
 fit2= eBayes(mod2)
-summary(fit2)
+fit_nitro2=topTable(fit2, coef = 2,adjust.method = "fdr",number=2153)
+fit_water2=topTable(fit2, coef = 3,adjust.method = "fdr",number=2153)
+fit_inter2=topTable(fit2, coef = 4,adjust.method = "fdr",number=2153)
 
-
-# Decision tests are performed based on the results of the fitted model in relation to the nitrogen variable
-results2=decideTests(fit2[,'NITROGEN'])
-summary(results2)
 
 #P-values are extracted from the factors of the empirical Bayes model
-#nitro_2=fit2$p.value[,2]
-water_2=fit2$p.value[,3]
-inter_2=fit2$p.value[,4]
+fit_nitro2$index=rownames(fit_nitro2)
+fit_nitro2$index=as.numeric(fit_nitro2$index)
+fit_nitro2=fit_nitro2 %>% arrange(index)
+nitro_2=fit_nitro2[,5]
 
-tableadjust2 = topTableF(fit2, adjust="fdr")
-nitro=tableadjust2$NITROGEN
-nitro
+fit_water2$index=rownames(fit_water2)
+fit_water2$index=as.numeric(fit_water2$index)
+fit_water2=fit_water2 %>% arrange(index)
+water_2=fit_water2[,5]
+
+fit_inter2$index=rownames(fit_inter2)
+fit_inter2$index=as.numeric(fit_inter2$index)
+fit_inter2=fit_inter2 %>% arrange(index)
+inter_2=fit_inter2[,5]
 ```
 
-```{r}
-# P-values are extracted for the factors for the traditional model
-
-df$NITROGEN=as.factor(df$NITROGEN)
-df$WATER=ifelse(df$WATER=='CW','I','WI')
-df$WATER=as.factor(df$WATER)
-dim(df)
-
-#Nitrogen --> 17
-#Water --> 18
-#Interaction --> 19
-
-#P-values for the interaction are extracted
-inter_2=c()
-for (i in 3:2153) {
-  mod <- summary(lm(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
-  pvalue=unlist(mod)[[19]]
-  inter_2=c(inter_2,pvalue)
-}
-
-#P-values for Nitrogen are extracted
-nitro_2=c()
-for (i in 3:2153) {
-  mod <- summary(lm(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
-  pvalue=unlist(mod)[[17]]
-  nitro_2=c(nitro_2,pvalue)
-}
-
-#P-values for water are extracted
-water_2=c()
-for (i in 3:2153) {
-  mod <- summary(lm(df[[i]] ~ df$NITROGEN * df$WATER, data = df))
-  pvalue=unlist(mod)[[18]]
-  water_2=c(water_2,pvalue)
-}
-
-
-```
+## Visualization comparison resultados
 
 ```{r}
-topTable(fit, coef=1, adjust="BH")
-
-```
-
-```{r}
-#All p values of the factors are grouped in a dataframe
 df_graph=data.frame(x=seq(350,2500),nitro,nitro_2,water,water_2,inter,inter_2)
 df_graph
+```
+
+```{r}
+#Nitrogen p values
+ggplot(df_graph,aes(x=x))+
+  geom_point(aes(y=-log(nitro, base = 10),color='black'),size=1,shape=16)+
+  geom_point(aes(y=-log(nitro_2, base = 10),color='red'),size=1,shape=16)+
+  geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed') +
+  theme_minimal()+
+  scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Weights")) +
+  xlab('Wavelength (nm)')+
+  ylab("-log p value (Nitrogen)")+
+  labs(color = "Method")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+# water p values
+ggplot(df_graph,aes(x=x))+
+  geom_point(aes(y=-log(water, base = 10),color='black'),size=1,shape=16)+
+  geom_point(aes(y=-log(water_2, base = 10),color='red'),size=1,shape=16)+
+  geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed')+
+  theme_minimal()+
+  scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Weights")) +
+  xlab('Wavelength (nm)')+
+  ylab("-log p value (Hydric stress)")+
+  labs(color = "Method")+
+  theme(plot.title = element_text(hjust = 0.5))
 ```
 
 **P-Value Behavior Graphs in Different Factors**
 
 ```{r}
-#Nitrogen p values
+#Interaction p values
 ggplot(df_graph,aes(x=x))+
-  geom_point(aes(y=nitro,color='black'),size=1,shape=16)+
-  geom_point(aes(y=nitro_2,color='red'),size=1,shape=16)+
-  geom_hline(yintercept = 0.05, color = "darkblue",linetype='dashed') +
+  geom_point(aes(y=-log(inter, base = 10),color='black',size=1,shape=16),size=1,shape=16)+
+  geom_point(aes(y=-log(inter_2, base = 10),color='red',size=1,shape=16),size=1,shape=16)+
+  geom_hline(yintercept =-log(0.05, base = 10) , color = "darkblue",linetype='dashed') +
   theme_minimal()+
-  scale_color_manual(values = c("#008B8B",'orange'), labels = c( "Normal","Weights")) +
+  scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Weights")) +
   xlab('Wavelength (nm)')+
-  ylab("Nitrogen (p-values)")+
+  ylab("-log p value (Interaction)")+
   labs(color = "Method")+
   theme(plot.title = element_text(hjust = 0.5))
 ```
