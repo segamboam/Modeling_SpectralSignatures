@@ -9,6 +9,7 @@ library(Biobase)
 library(dplyr)
 library(tidyr)
 library(gridExtra)
+library(openxlsx)
 ```
 
 ## Lectura y Ajuste de los datos
@@ -41,12 +42,16 @@ inter_1 = p.adjust(inter_0,method = "fdr")
 
 ```{r}
 #Nitrogen p values
-ggplot(df_graph,aes(x=x))+
-  geom_point(aes(y=-log(nitro, base = 10),color='black'),size=1,shape=16)+
-  geom_point(aes(y=-log(nitro_0, base = 10),color='red'),size=1,shape=16)+
+df_graph_n=data.frame(x=seq(350,2500),nitro_0,nitro_1,water_0,water_1,inter_0,inter_1)
+ggplot(df_graph_n,aes(x=x))+
+  geom_point(aes(y=-log(nitro_0, base = 10),color='black'),size=1,shape=16)+
+  geom_point(aes(y=-log(nitro_1, base = 10),color='red'),size=1,shape=16)+
   geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed') +
+  geom_hline(yintercept = -log(0.03, base = 10), color = "red",linetype='dashed') +
+  geom_hline(yintercept = -log(0.01, base = 10), color = "black",linetype='dashed') +
+    scale_color_manual(values = c("darkgreen",'purple'), labels = c( "Normal","Corregido")) +
+
   theme_minimal()+
-  scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Corregido")) +
   xlab('Wavelength (nm)')+
   ylab("-log p value (Nitrogen)")+
   labs(color = "Method")+
@@ -95,7 +100,8 @@ inter=fit_inter[,5]
 
 ```{r}
 esLong = seq(350,2500)
-weightsEs = ifelse(esLong > 1050, 2, 1.4)
+weightsEs = ifelse(esLong > 1050, 4, 1.4)
+#weightsEs = ifelse(esLong > 1050, 2/3.4, 1.4/3.4)
 
 # The expression data variable stores a dataframe of the transposed matrix of the imported spectral signature data
 expression_data=as.data.frame(t(df[,3:2153]))
@@ -132,21 +138,45 @@ fit_inter2=fit_inter2 %>% arrange(index)
 inter_2=fit_inter2[,5]
 ```
 
-## Visualization comparison resultados
+## Exportar resultados 
 
 ```{r}
-df_graph=data.frame(x=seq(350,2500),nitro,nitro_2,water,water_2,inter,inter_2)
-df_graph
+df_graph=data.frame(x=seq(350,2500),nitro_0, nitro_1, nitro, nitro_2,water_0,water_1, water,water_2,inter_0,inter_1,inter,inter_2)
+```
+
+```{r}
+write.xlsx(df_graph,file = "D:/Proyectos/33.LimmaFirmasEspectralesWeights/Modeling_SpectralSignatures/result.xlsx",rowNames = FALSE)
+```
+
+## Analisis de los resultados
+
+```{r}
+df_result=read_xlsx("D:/Proyectos/33.LimmaFirmasEspectralesWeights/Modeling_SpectralSignatures/result.xlsx")
+
+```
+
+```{r}
+#Analisis de diferencia entre los metodos
+LicVSLmN = sqrt(mean((df_result$nitro_LiC- df_result$nitro_LmN)^2))
+LicVSLmC = sqrt(mean((df_result$nitro_LiC- df_result$nitro_LmC)^2))
+LicVSLicw = sqrt(mean((df_result$nitro_LiC- df_result$nitro_LiCW)^2))
+print(paste("Limma corregido vs lm normal RMSE:",LicVSLmN))
+print(paste("Limma corregido vs lm corregido RMSE:",LicVSLmC))
+print(paste("Limma corregido vs limma corregido pesos RMSE:",LicVSLicw))
+
 ```
 
 ```{r}
 #Nitrogen p values
-ggplot(df_graph,aes(x=x))+
-  geom_point(aes(y=-log(nitro, base = 10),color='black'),size=1,shape=16)+
-  geom_point(aes(y=-log(nitro_2, base = 10),color='red'),size=1,shape=16)+
+ggplot(df_result,aes(x=espectro))+
+  geom_point(aes(y=-log(nitro_LiC, base = 10),color='black'),size=1,shape=16)+
+  geom_point(aes(y=-log(nitro_LiCW, base = 10),color='red'),size=1,shape=16)+
   geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed') +
+  geom_hline(yintercept = -log(0.03, base = 10), color = "red",linetype='dashed') +
+  geom_hline(yintercept = -log(0.01, base = 10), color = "black",linetype='dashed') +
+    scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Weights")) +
+
   theme_minimal()+
-  scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Weights")) +
   xlab('Wavelength (nm)')+
   ylab("-log p value (Nitrogen)")+
   labs(color = "Method")+
@@ -185,33 +215,68 @@ ggplot(df_graph,aes(x=x))+
 ```
 
 ```{r}
-#Water p values
+buscar_rangos_superiores <- function(dataframe, columna_x, columna_y, filtro) {
+  # Aplicar la función -log en base 10 a los valores de la columna y y al filtro
+  dataframe$log_y <- -log10(dataframe[, columna_y])
+  filtro_log <- -log10(filtro)
+  
+  # Crear una lista vacía para almacenar los rangos
+  rangos <- list()
+  
+  # Inicializar variables para el rango actual
+  inicio_rango <- NULL
+  fin_rango <- NULL
+  
+  # Iterar a través de las filas del dataframe
+  for (i in 1:nrow(dataframe)) {
+    # Verificar si el valor de y (o log(y)) es mayor al filtro (o log(filtro))
+    if (dataframe[i, "log_y"] > filtro_log) {
+      # Si es el comienzo del rango, guardar el valor de x
+      if (is.null(inicio_rango)) {
+        inicio_rango <- dataframe[i, columna_x]
+      }
+      # Actualizar el valor final del rango
+      fin_rango <- dataframe[i, columna_x]
+    } else {
+      # Si el valor de y (o log(y)) es menor o igual al filtro (o log(filtro)) y hay un rango activo, almacenarlo
+      if (!is.null(inicio_rango)) {
+        rangos[[length(rangos) + 1]] <- c(inicio_rango, fin_rango)
+        # Reiniciar los índices de inicio y fin del rango
+        inicio_rango <- NULL
+        fin_rango <- NULL
+      }
+    }
+  }
+  
+  # Si hay un rango activo al final del dataframe, también almacenarlo
+  if (!is.null(inicio_rango)) {
+    rangos[[length(rangos) + 1]] <- c(inicio_rango, fin_rango)
+  }
+  
+  # Devolver los rangos encontrados en el formato deseado
+  for (i in 1:length(rangos)) {
+    print(paste("rango", i, rangos[[i]][1], ":", rangos[[i]][2]))
+  }
+}
 
-ggplot(df_graph,aes(x=x))+
-  geom_point(aes(y=water,color='black'),size=1,shape=16)+
-  geom_point(aes(y=water_2,color='red'),size=1,shape=16)+
-  geom_hline(yintercept = 0.05, color = "darkblue",linetype='dashed') +
-  theme_minimal()+
-  scale_color_manual(values = c("#008B8B",'orange'), labels = c( "EBA","CA")) +
-  xlab('Wavelength (nm)')+
-  ylab("Hydric Stress (p-values)")+
-  labs(color = "Method")+
-  theme(plot.title = element_text(hjust = 0.5))
+# Ejemplo de uso:
+# Supongamos que tienes un dataframe llamado "datos" con las columnas x y y
+# Y quieres buscar rangos en la columna "x" donde los valores correspondientes en la columna "y"
+# tengan valores -log en base 10 superiores a 0.05
+# Puedes llamar a la función de la siguiente manera:
+# buscar_rangos_superiores(datos, "x", "y", 0.05)
+
+
 ```
 
 ```{r}
-#Interaction p values
+for (columna in c("nitro_LmN", "nitro_LmC" ,"nitro_LiC", "nitro_LiCW")){
+for (f in c(0.05,0.03,0.01)){
+  print(paste("-------------",columna,"Filtro:",f,"-------------"))
+  buscar_rangos_superiores(dataframe = df_result,columna_x = "espectro",columna_y = columna,filtro = f)
+  print("--------------------------------------------------")
+}}
 
-ggplot(df_graph,aes(x=x))+
-  geom_point(aes(y=inter,color='black',size=1,shape=16),size=1,shape=16)+
-  geom_point(aes(y=inter_2,color='red',size=1,shape=16),size=1,shape=16)+
-  geom_hline(yintercept = 0.05, color = "darkblue",linetype='dashed') +
-  theme_minimal()+
-  scale_color_manual(values = c("#008B8B",'orange'), labels = c( "EBA","CA")) +
-  xlab('Wavelength (nm)')+
-  ylab("Interaction (p-values)")+
-  labs(color = "Method")+
-  theme(plot.title = element_text(hjust = 0.5))
 ```
 
 ```{r}
