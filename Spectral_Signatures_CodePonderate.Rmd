@@ -100,7 +100,7 @@ inter=fit_inter[,5]
 
 ```{r}
 esLong = seq(350,2500)
-weightsEs = ifelse(esLong > 1050, 4, 1.4)
+weightsEs = ifelse(esLong > 1001, 10, 3)
 #weightsEs = ifelse(esLong > 1050, 2/3.4, 1.4/3.4)
 
 # The expression data variable stores a dataframe of the transposed matrix of the imported spectral signature data
@@ -138,7 +138,7 @@ fit_inter2=fit_inter2 %>% arrange(index)
 inter_2=fit_inter2[,5]
 ```
 
-## Exportar resultados 
+## Exportar resultados
 
 ```{r}
 df_graph=data.frame(x=seq(350,2500),nitro_0, nitro_1, nitro, nitro_2,water_0,water_1, water,water_2,inter_0,inter_1,inter,inter_2)
@@ -168,9 +168,9 @@ print(paste("Limma corregido vs limma corregido pesos RMSE:",LicVSLicw))
 
 ```{r}
 #Nitrogen p values
-ggplot(df_result,aes(x=espectro))+
-  geom_point(aes(y=-log(nitro_LiC, base = 10),color='black'),size=1,shape=16)+
-  geom_point(aes(y=-log(nitro_LiCW, base = 10),color='red'),size=1,shape=16)+
+ggplot(df_graph,aes(x=x))+
+  geom_point(aes(y=-log(nitro, base = 10),color='black'),size=1,shape=16)+
+  geom_point(aes(y=-log(nitro_2, base = 10),color='red'),size=1,shape=16)+
   geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed') +
   geom_hline(yintercept = -log(0.03, base = 10), color = "red",linetype='dashed') +
   geom_hline(yintercept = -log(0.01, base = 10), color = "black",linetype='dashed') +
@@ -267,6 +267,10 @@ buscar_rangos_superiores <- function(dataframe, columna_x, columna_y, filtro) {
 # buscar_rangos_superiores(datos, "x", "y", 0.05)
 
 
+```
+
+```{r}
+buscar_rangos_superiores(dataframe = df_result,columna_x = "x",columna_y = 'nitro_2',filtro = 0.01)
 ```
 
 ```{r}
