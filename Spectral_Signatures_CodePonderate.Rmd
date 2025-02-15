@@ -1,3 +1,7 @@
+---
+---
+---
+
 # 
 
 ```{r}
@@ -15,705 +19,305 @@ library(openxlsx)
 ## Lectura y Ajuste de los datos
 
 ```{r}
-df=read_xlsx("D:/Proyectos/33.LimmaFirmasEspectralesWeights/Modeling_SpectralSignatures/Spectral_signatures.xlsx")
-WATER=ifelse(df$WATER=='CW',1,0)
-df$WATER=WATER
+df=read_xlsx("E:/Proyectos/33.LimmaFirmasEspectralesWeights/Modeling_SpectralSignatures/Spectral_signatures.xlsx")
+df$WATER=ifelse(df$WATER=='CW',1,0)
+df
+```
+
+## Funciones
+
+```{r}
+#Graficas comparativas entre dos pvalores 
+plot_pvalues <- function(wavelengths, pval_0, pval_1, y_label = "-log p value", 
+                         color_0 = "black", color_1 = "red", 
+                         label_0 = "Category 1", label_1 = "Category 2",
+                         plot_title = "P-Value Plot") {
+  # Crear un data frame con los valores de entrada
+  df_graph <- data.frame(x = wavelengths, pval_0, pval_1)
+  
+  ggplot(df_graph, aes(x = x)) +
+    # Graficar los puntos de los valores p transformados
+    geom_point(aes(y = -log(pval_0, base = 10), color = color_0), size = 1, shape = 16) +
+    geom_point(aes(y = -log(pval_1, base = 10), color = color_1), size = 1, shape = 16) +
+    
+    # Agregar líneas horizontales para umbrales de significancia
+    geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue", linetype = 'dashed') +
+    geom_hline(yintercept = -log(0.03, base = 10), color = "red", linetype = 'dashed') +
+    geom_hline(yintercept = -log(0.01, base = 10), color = "black", linetype = 'dashed') +
+    
+    # Personalizar colores y etiquetas
+    scale_color_manual(values = c(color_0, color_1), labels = c(label_0, label_1)) +
+    
+    # Ajustar el estilo del gráfico
+    theme_minimal() +
+    xlab('Wavelength (nm)') +
+    ylab(y_label) +
+    labs(color = "Method", title = plot_title) +
+    theme(plot.title = element_text(hjust = 0.5))
+}
+```
+
+```{r}
+#Metodologia de p valor con ajuste clasico
+extract_pvalues <- function(df, model_formula, 
+                            start_col = 1, end_col = ncol(df), 
+                            apply_correction = TRUE, correction_method = "fdr") {
+  
+  # Obtener nombres de variables del modelo
+  vars <- all.vars(model_formula)
+  
+  # Listas para almacenar los p-valores
+  pvalues <- list()
+  
+  for (i in start_col:end_col) {
+    # Construir el modelo dinámicamente
+    formula_str <- paste("df[[i]] ~", paste(vars, collapse = " * "))
+    mod <- summary(lm(as.formula(formula_str), data = df))
+    
+    # Extraer p-valores
+    for (var in vars) {
+      if (var %in% rownames(mod$coefficients)) {
+        pvalues[[var]] <- c(pvalues[[var]], mod$coefficients[var, 'Pr(>|t|)'])
+      } else {
+        pvalues[[var]] <- c(pvalues[[var]], NA)  # Si la variable no está, poner NA
+      }
+    }
+    
+    # Interacción (si aplica)
+    interaction_term <- paste(vars, collapse = ":")
+    if (interaction_term %in% rownames(mod$coefficients)) {
+      pvalues[[interaction_term]] <- c(pvalues[[interaction_term]], mod$coefficients[interaction_term, 'Pr(>|t|)'])
+    } else {
+      pvalues[[interaction_term]] <- c(pvalues[[interaction_term]], NA)
+    }
+  }
+  
+  # Aplicar corrección si es necesario
+  if (apply_correction) {
+    for (key in names(pvalues)) {
+      pvalues[[key]] <- p.adjust(pvalues[[key]], method = correction_method)
+    }
+  }
+  
+  return(pvalues)
+}
+```
+
+```{r}
+#metodologia de pvalor con limma
+extract_pvalues_limma <- function(df, model_formula, 
+                                  start_col = 3, end_col = ncol(df), 
+                                  weights = NULL,
+                                  correction_method = "fdr") {
+  
+  # Extraer nombres de variables del modelo
+  vars <- all.vars(model_formula)
+  
+  # Transponer la matriz de datos para usar en limma
+  expression_data <- as.data.frame(t(df[, start_col:end_col]))
+  
+  # Crear la matriz de diseño
+  design <- model.matrix(as.formula(paste("~", paste(vars, collapse = " * "))), data = df)
+  
+  # Ajustar el modelo con lmFit y eBayes, usando pesos si se proporcionan
+  if (!is.null(weights)) {
+    mod <- lmFit(expression_data, design, weights = weights)
+  } else {
+    mod <- lmFit(expression_data, design)
+  }
+    fit <- eBayes(mod)
+  
+  # Extraer p-valores
+  pvalues <- list()
+  
+  for (i in 2:ncol(design)) {  # Coeficientes desde el 2 (el 1 es el intercepto)
+    coef_name <- colnames(design)[i]
+    
+    fit_table <- topTable(fit, coef = i, adjust.method = correction_method, number = end_col)
+    fit_table$index <- as.numeric(rownames(fit_table))
+    fit_table <- fit_table %>% arrange(index)
+    
+    pvalues[[coef_name]] <- fit_table[, 5]  # Extrae la columna de p-valores
+  }
+  
+  return(pvalues)
+}
+```
+
+```{r}
+#rangos de bandas con pvalores superiores al establecido
+buscar_rangos_superiores <- function(pvalues, columna_x, filtros) {
+  for (filtro in filtros) {
+    # Mostrar la separación para el filtro actual
+    print(paste("------------- Filtro:", filtro, "-------------"))
+    
+    # Aplicar la transformación -log10 a los valores de p-values y al filtro
+    log_y <- -log10(pvalues)
+    filtro_log <- -log10(filtro)
+    
+    # Crear una lista para almacenar los rangos
+    rangos <- list()
+    
+    # Inicializar variables para el rango actual
+    inicio_rango <- NULL
+    fin_rango <- NULL
+    
+    # Iterar a través de los valores
+    for (i in seq_along(columna_x)) {
+      # Verificar si el valor de -log10(p-value) es mayor al umbral
+      if (log_y[i] > filtro_log) {
+        # Si es el comienzo del rango, guardar el valor de x
+        if (is.null(inicio_rango)) {
+          inicio_rango <- columna_x[i]
+        }
+        # Actualizar el valor final del rango
+        fin_rango <- columna_x[i]
+      } else {
+        # Si se encuentra un valor menor o igual al umbral y hay un rango activo, almacenarlo
+        if (!is.null(inicio_rango)) {
+          rangos[[length(rangos) + 1]] <- c(inicio_rango, fin_rango)
+          # Reiniciar los índices de inicio y fin del rango
+          inicio_rango <- NULL
+          fin_rango <- NULL
+        }
+      }
+    }
+    
+    # Si hay un rango activo al final, almacenarlo
+    if (!is.null(inicio_rango)) {
+      rangos[[length(rangos) + 1]] <- c(inicio_rango, fin_rango)
+    }
+    
+    # Imprimir los rangos encontrados
+    for (i in seq_along(rangos)) {
+      print(paste("Rango", i, rangos[[i]][1], ":", rangos[[i]][2]))
+    }
+  }
+}
+
+
 ```
 
 ## Modelos lm
 
 ```{r}
 #P-values for the interaction are extracted
-nitro_0=c()
-water_0=c()
-inter_0=c()
-for (i in 3:2153) {
-  mod <- summary(lm(df[[i]]~NITROGEN*WATER,data = df))
-  nitro_0=c(nitro_0,mod$coefficients['NITROGEN','Pr(>|t|)'])
-  water_0=c(water_0,mod$coefficients['WATER','Pr(>|t|)'])
-  inter_0=c(inter_0,mod$coefficients['NITROGEN:WATER','Pr(>|t|)'])
-}
+result <- extract_pvalues(df, model_formula = ~ NITROGEN * WATER,start_col = 3)
+nitro_0=result$NITROGEN
+water_0=result$WATER
+inter_0=result$`NITROGEN:WATER`
 
 #Correccion
-nitro_1 = p.adjust(nitro_0,method = "fdr")
-water_1 = p.adjust(water_0,method = "fdr")
-inter_1 = p.adjust(inter_0,method = "fdr")
-```
-
-```{r}
-#Nitrogen p values
-df_graph_n=data.frame(x=seq(350,2500),nitro_0,nitro_1,water_0,water_1,inter_0,inter_1)
-ggplot(df_graph_n,aes(x=x))+
-  geom_point(aes(y=-log(nitro_0, base = 10),color='black'),size=1,shape=16)+
-  geom_point(aes(y=-log(nitro_1, base = 10),color='red'),size=1,shape=16)+
-  geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed') +
-  geom_hline(yintercept = -log(0.03, base = 10), color = "red",linetype='dashed') +
-  geom_hline(yintercept = -log(0.01, base = 10), color = "black",linetype='dashed') +
-    scale_color_manual(values = c("darkgreen",'purple'), labels = c( "Normal","Corregido")) +
-
-  theme_minimal()+
-  xlab('Wavelength (nm)')+
-  ylab("-log p value (Nitrogen)")+
-  labs(color = "Method")+
-  theme(plot.title = element_text(hjust = 0.5))
-```
-
-## Modelo Limma normal
-
-```{r}
-# The expression data variable stores a dataframe of the transposed matrix of the imported spectral signature data
-expression_data=as.data.frame(t(df[,3:2153]))
-
-# Design matrix is created to perform analysis of variance or some linear model
-design=model.matrix(~NITROGEN*WATER,data = df)
-
-
-# The model is fitted by inserting the dataframe with the spectral signatures and the created design matrix
-mod=lmFit(expression_data,design)
-
-
-#The results of the statistical model are adjusted using empirical Bayes
-fit= eBayes(mod)
-fit_nitro=topTable(fit, coef = 2,adjust.method = "fdr",number=2153)
-fit_water=topTable(fit, coef = 3,adjust.method = "fdr",number=2153)
-fit_inter=topTable(fit, coef = 4,adjust.method = "fdr",number=2153)
-
-
-#P-values are extracted from the factors of the empirical Bayes model
-fit_nitro$index=rownames(fit_nitro)
-fit_nitro$index=as.numeric(fit_nitro$index)
-fit_nitro=fit_nitro %>% arrange(index)
-nitro=fit_nitro[,5]
-
-fit_water$index=rownames(fit_water)
-fit_water$index=as.numeric(fit_water$index)
-fit_water=fit_water %>% arrange(index)
-water=fit_water[,5]
-
-fit_inter$index=rownames(fit_inter)
-fit_inter$index=as.numeric(fit_inter$index)
-fit_inter=fit_inter %>% arrange(index)
-inter=fit_inter[,5]
-```
-
-## Modelo Limma weights
-
-```{r}
-esLong = seq(350,2500)
-weightsEs = ifelse(esLong > 1001, 10, 3)
-#weightsEs = ifelse(esLong > 1050, 2/3.4, 1.4/3.4)
-
-# The expression data variable stores a dataframe of the transposed matrix of the imported spectral signature data
-expression_data=as.data.frame(t(df[,3:2153]))
-
-# Design matrix is created to perform analysis of variance or some linear model
-design=model.matrix(~NITROGEN*WATER,data = df)
-
-
-# The model is fitted by inserting the dataframe with the spectral signatures and the created design matrix
-mod2=lmFit(expression_data,design,weights = weightsEs)
-
-
-#The results of the statistical model are adjusted using empirical Bayes
-fit2= eBayes(mod2)
-fit_nitro2=topTable(fit2, coef = 2,adjust.method = "fdr",number=2153)
-fit_water2=topTable(fit2, coef = 3,adjust.method = "fdr",number=2153)
-fit_inter2=topTable(fit2, coef = 4,adjust.method = "fdr",number=2153)
-
-
-#P-values are extracted from the factors of the empirical Bayes model
-fit_nitro2$index=rownames(fit_nitro2)
-fit_nitro2$index=as.numeric(fit_nitro2$index)
-fit_nitro2=fit_nitro2 %>% arrange(index)
-nitro_2=fit_nitro2[,5]
-
-fit_water2$index=rownames(fit_water2)
-fit_water2$index=as.numeric(fit_water2$index)
-fit_water2=fit_water2 %>% arrange(index)
-water_2=fit_water2[,5]
-
-fit_inter2$index=rownames(fit_inter2)
-fit_inter2$index=as.numeric(fit_inter2$index)
-fit_inter2=fit_inter2 %>% arrange(index)
-inter_2=fit_inter2[,5]
-```
-
-## Exportar resultados
-
-```{r}
-df_graph=data.frame(x=seq(350,2500),nitro_0, nitro_1, nitro, nitro_2,water_0,water_1, water,water_2,inter_0,inter_1,inter,inter_2)
-```
-
-```{r}
-write.xlsx(df_graph,file = "D:/Proyectos/33.LimmaFirmasEspectralesWeights/Modeling_SpectralSignatures/result.xlsx",rowNames = FALSE)
-```
-
-## Analisis de los resultados
-
-```{r}
-df_result=read_xlsx("D:/Proyectos/33.LimmaFirmasEspectralesWeights/Modeling_SpectralSignatures/result.xlsx")
+result <- extract_pvalues(df, model_formula = ~ NITROGEN * WATER,start_col = 3,apply_correction = FALSE)
+nitro_1=result$NITROGEN
+water_1=result$WATER
+inter_1=result$`NITROGEN:WATER`
 
 ```
 
 ```{r}
-#Analisis de diferencia entre los metodos
-LicVSLmN = sqrt(mean((df_result$nitro_LiC- df_result$nitro_LmN)^2))
-LicVSLmC = sqrt(mean((df_result$nitro_LiC- df_result$nitro_LmC)^2))
-LicVSLicw = sqrt(mean((df_result$nitro_LiC- df_result$nitro_LiCW)^2))
-print(paste("Limma corregido vs lm normal RMSE:",LicVSLmN))
-print(paste("Limma corregido vs lm corregido RMSE:",LicVSLmC))
-print(paste("Limma corregido vs limma corregido pesos RMSE:",LicVSLicw))
+title = "Comparacion datos originales y corregidos con P.adjust y frd"
+wavelengths <- seq(350, 2500)
+plot_pvalues(wavelengths, nitro_0, nitro_1, color_0 = "darkgreen", color_1 = "purple", label_0 = "Normal", label_1 = "Corregido",plot_title = title)
+```
+
+```{r}
+print(paste("------------- pValores sin ajustar -------------"))
+wavelengths <- seq(350, 2500)
+filtros <- c(0.05, 0.01, 0.001)  # Lista de filtros
+rangos_nitro <- buscar_rangos_superiores(nitro_0, wavelengths, filtros)
 
 ```
 
 ```{r}
-#Nitrogen p values
-ggplot(df_graph,aes(x=x))+
-  geom_point(aes(y=-log(nitro, base = 10),color='black'),size=1,shape=16)+
-  geom_point(aes(y=-log(nitro_2, base = 10),color='red'),size=1,shape=16)+
-  geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed') +
-  geom_hline(yintercept = -log(0.03, base = 10), color = "red",linetype='dashed') +
-  geom_hline(yintercept = -log(0.01, base = 10), color = "black",linetype='dashed') +
-    scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Weights")) +
+print(paste("------------- pValores con ajuste fdr -------------"))
+wavelengths <- seq(350, 2500)
+filtros <- c(0.05, 0.01, 0.001)  # Lista de filtros
+rangos_nitro <- buscar_rangos_superiores(nitro_1, wavelengths, filtros)
 
-  theme_minimal()+
-  xlab('Wavelength (nm)')+
-  ylab("-log p value (Nitrogen)")+
-  labs(color = "Method")+
-  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## Modelos Limma
+
+```{r}
+#limma sin pesos fdr
+result <- extract_pvalues_limma(df, model_formula = ~ NITROGEN * WATER)
+nitro_2=result$NITROGEN
+water_2=result$WATER
+inter_2=result$`NITROGEN:WATER`
+# limma pesos resolucion espectral 350 a 1000 + 3 y 1000 a 2500 =6
+esLong <- seq(350, 2500)
+weightsEs <- ifelse(esLong > 1000, 6, 3)
+result <- extract_pvalues_limma(df, model_formula = ~ NITROGEN * WATER, weights = weightsEs)
+nitro_3=result$NITROGEN
+water_3=result$WATER
+inter_3=result$`NITROGEN:WATER`
+# limma pesos resolucion espectral  350 a 1000 + 3 y 1000 a 2500 =8
+esLong <- seq(350, 2500)
+weightsEs <- ifelse(esLong > 1000, 8, 3)
+result <- extract_pvalues_limma(df, model_formula = ~ NITROGEN * WATER, weights = weightsEs)
+nitro_4=result$NITROGEN
+water_4=result$WATER
+inter_4=result$`NITROGEN:WATER`
+# limma pesos resolucion espectral 350 a 1000 + 3 y 1000 a 2500 =10
+esLong <- seq(350, 2500)
+weightsEs <- ifelse(esLong > 1000, 10, 3)
+result <- extract_pvalues_limma(df, model_formula = ~ NITROGEN * WATER, weights = weightsEs)
+nitro_5=result$NITROGEN
+water_5=result$WATER
+inter_5=result$`NITROGEN:WATER`
+# limma pesos 350 a 1000 + 3 y 1000 a 2500 =30
+esLong <- seq(350, 2500)
+weightsEs <- ifelse(esLong > 1000, 30, 3)
+result <- extract_pvalues_limma(df, model_formula = ~ NITROGEN * WATER, weights = weightsEs)
+nitro_6=result$NITROGEN
+water_6=result$WATER
+inter_6=result$`NITROGEN:WATER`
 
 ```
 
 ```{r}
-# water p values
-ggplot(df_graph,aes(x=x))+
-  geom_point(aes(y=-log(water, base = 10),color='black'),size=1,shape=16)+
-  geom_point(aes(y=-log(water_2, base = 10),color='red'),size=1,shape=16)+
-  geom_hline(yintercept = -log(0.05, base = 10), color = "darkblue",linetype='dashed')+
-  theme_minimal()+
-  scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Weights")) +
-  xlab('Wavelength (nm)')+
-  ylab("-log p value (Hydric stress)")+
-  labs(color = "Method")+
-  theme(plot.title = element_text(hjust = 0.5))
-```
-
-**P-Value Behavior Graphs in Different Factors**
-
-```{r}
-#Interaction p values
-ggplot(df_graph,aes(x=x))+
-  geom_point(aes(y=-log(inter, base = 10),color='black',size=1,shape=16),size=1,shape=16)+
-  geom_point(aes(y=-log(inter_2, base = 10),color='red',size=1,shape=16),size=1,shape=16)+
-  geom_hline(yintercept =-log(0.05, base = 10) , color = "darkblue",linetype='dashed') +
-  theme_minimal()+
-  scale_color_manual(values = c("black",'orange'), labels = c( "Normal","Weights")) +
-  xlab('Wavelength (nm)')+
-  ylab("-log p value (Interaction)")+
-  labs(color = "Method")+
-  theme(plot.title = element_text(hjust = 0.5))
+title = "Comparacion limma sin pesos y con pesos resulucion 30"
+wavelengths <- seq(350, 2500)
+plot_pvalues(wavelengths, nitro_2, nitro_6, color_0 = "darkgreen", color_1 = "purple", label_0 = "limma", label_1 = "limma pesos",plot_title = title)
 ```
 
 ```{r}
-buscar_rangos_superiores <- function(dataframe, columna_x, columna_y, filtro) {
-  # Aplicar la función -log en base 10 a los valores de la columna y y al filtro
-  dataframe$log_y <- -log10(dataframe[, columna_y])
-  filtro_log <- -log10(filtro)
-  
-  # Crear una lista vacía para almacenar los rangos
-  rangos <- list()
-  
-  # Inicializar variables para el rango actual
-  inicio_rango <- NULL
-  fin_rango <- NULL
-  
-  # Iterar a través de las filas del dataframe
-  for (i in 1:nrow(dataframe)) {
-    # Verificar si el valor de y (o log(y)) es mayor al filtro (o log(filtro))
-    if (dataframe[i, "log_y"] > filtro_log) {
-      # Si es el comienzo del rango, guardar el valor de x
-      if (is.null(inicio_rango)) {
-        inicio_rango <- dataframe[i, columna_x]
-      }
-      # Actualizar el valor final del rango
-      fin_rango <- dataframe[i, columna_x]
-    } else {
-      # Si el valor de y (o log(y)) es menor o igual al filtro (o log(filtro)) y hay un rango activo, almacenarlo
-      if (!is.null(inicio_rango)) {
-        rangos[[length(rangos) + 1]] <- c(inicio_rango, fin_rango)
-        # Reiniciar los índices de inicio y fin del rango
-        inicio_rango <- NULL
-        fin_rango <- NULL
-      }
-    }
-  }
-  
-  # Si hay un rango activo al final del dataframe, también almacenarlo
-  if (!is.null(inicio_rango)) {
-    rangos[[length(rangos) + 1]] <- c(inicio_rango, fin_rango)
-  }
-  
-  # Devolver los rangos encontrados en el formato deseado
-  for (i in 1:length(rangos)) {
-    print(paste("rango", i, rangos[[i]][1], ":", rangos[[i]][2]))
-  }
-}
-
-# Ejemplo de uso:
-# Supongamos que tienes un dataframe llamado "datos" con las columnas x y y
-# Y quieres buscar rangos en la columna "x" donde los valores correspondientes en la columna "y"
-# tengan valores -log en base 10 superiores a 0.05
-# Puedes llamar a la función de la siguiente manera:
-# buscar_rangos_superiores(datos, "x", "y", 0.05)
-
-
+print(paste("------------- pValores con limma -------------"))
+wavelengths <- seq(350, 2500)
+filtros <- c(0.05, 0.01, 0.001)  # Lista de filtros
+rangos_nitro <- buscar_rangos_superiores(nitro_2, wavelengths, filtros)
 ```
 
 ```{r}
-buscar_rangos_superiores(dataframe = df_result,columna_x = "x",columna_y = 'nitro_2',filtro = 0.01)
+print(paste("------------- pValores con limma -------------"))
+print(paste("----------- resolucion espectral 3 (350-1000) y 6 (1000-2500) -----------"))
+wavelengths <- seq(350, 2500)
+filtros <- c(0.05, 0.01, 0.001)  # Lista de filtros
+rangos_nitro <- buscar_rangos_superiores(nitro_3, wavelengths, filtros)
 ```
 
 ```{r}
-for (columna in c("nitro_LmN", "nitro_LmC" ,"nitro_LiC", "nitro_LiCW")){
-for (f in c(0.05,0.03,0.01)){
-  print(paste("-------------",columna,"Filtro:",f,"-------------"))
-  buscar_rangos_superiores(dataframe = df_result,columna_x = "espectro",columna_y = columna,filtro = f)
-  print("--------------------------------------------------")
-}}
-
+print(paste("------------- pValores con limma -------------"))
+print(paste("----------- resolucion espectral 3 (350-1000) y 8 (1000-2500) -----------"))
+wavelengths <- seq(350, 2500)
+filtros <- c(0.05, 0.01, 0.001)  # Lista de filtros
+rangos_nitro <- buscar_rangos_superiores(nitro_4, wavelengths, filtros)
 ```
 
 ```{r}
-# Nitrogen Matrix
-g1=ggplot(df_graph, aes(x = nitro_2, y = nitro)) +
-  geom_point(shape = 16, size = 1) +
-  xlim(-0.1, 1) +
-  ylim(-0.1, 1) +
-  labs(title = "Nitrogen (p-values)",
-       x = "Classical Approach",
-       y = "Empirical Bayesian Approach") +
-  geom_text(aes(label = 'A:467'), x = -0.08, y = 0.9, color = "darkblue", size = 2.5) +
-  geom_text(aes(label = 'C:1117'), x = -0.08, y = -0.05, color = "darkblue", size = 2.5) +
-  geom_text(aes(label = 'B:378'), x = 0.9, y = 0.9, color = "darkblue", size = 2.5) +
-  geom_text(aes(label = 'D:189'), x = 0.9, y = -0.05, color = "darkblue", size = 2.5)+     geom_hline(yintercept = 0.05, color = "darkred", size = 0.6,linetype = "dashed") +
-  geom_vline(xintercept = 0.05, color = "darkred", size = 0.6,linetype = "dashed") +
-  theme_minimal()+
-  theme(plot.title = element_text(hjust = 0.5))
+print(paste("------------- pValores con limma -------------"))
+print(paste("----------- resolucion espectral 3 (350-1000) y 10 (1000-2500) -----------"))
+wavelengths <- seq(350, 2500)
+filtros <- c(0.05, 0.01, 0.001)  # Lista de filtros
+rangos_nitro <- buscar_rangos_superiores(nitro_5, wavelengths, filtros)
 ```
 
 ```{r}
-# Water Matrix
-g2=ggplot(df_graph, aes(x = water_2, y = water)) +
-  geom_point(shape = 16, size = 1) +
-  xlim(-0.1, 1) +
-  ylim(-0.1, 1) +
-  labs(title = "Hydric Stress (p-values)",
-       x = "Classical Approach",
-       y = "") +
-  geom_text(aes(label = 'A:845'), x = -0.08, y = 0.9, color = "darkblue", size = 2.5) +
-  geom_text(aes(label = 'C:0'), x = -0.08, y = 0, color = "darkblue", size = 2.5) +
-  geom_text(aes(label = 'B:1306'), x = 0.98, y = 0.9, color = "darkblue", size = 2.5) +
-  geom_text(aes(label = 'D:0'), x = 0.98, y = 0, color = "darkblue", size = 2.5)+
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "blue", size = 0.5) +
-  geom_hline(yintercept = 0.05, color = "darkred", size = 0.6,linetype = "dashed") +
-  geom_vline(xintercept = 0.05, color = "darkred", size = 0.6,linetype = "dashed") +
-  theme_minimal()+
-  theme(plot.title = element_text(hjust = 0.5))
+print(paste("------------- pValores con limma -------------"))
+print(paste("----------- resolucion espectral 3 (350-1000) y 30 (1000-2500) -----------"))
+wavelengths <- seq(350, 2500)
+filtros <- c(0.05, 0.01, 0.001)  # Lista de filtros
+rangos_nitro <- buscar_rangos_superiores(nitro_6, wavelengths, filtros)
 
-#Paste both graphs
-grid.arrange(
-  g1 + annotate("text", x = 1, y = Inf, label = "A", vjust = 1, hjust = 22, size = 5),
-  g2 + annotate("text", x = 1, y = Inf, label = "B", vjust = 1, hjust = 22, size = 5),
-  nrow = 1,
-  widths = c(0.7, 0.7))
-
-```
-
-```{r}
-# Interaction Matrix
-ggplot(df_graph, aes(x = inter_2, y = inter)) +
-  geom_point(shape = 16, size = 1) +
-  xlim(-0.1, 1) +
-  ylim(-0.1, 1) +
-  labs(title = "Interaction [Hydric Stress-Nitrogen] (p-values)",
-       x = "Classical Approach",
-       y = "Empirical Bayesian Approach") +
-  geom_text(aes(label = 'A:0'), x = -0.08, y = 0.9, color = "darkblue", size = 4) +
-  geom_text(aes(label = 'C:0'), x = -0.08, y = -0.03, color = "darkblue", size = 4) +
-  geom_text(aes(label = 'B:2146'), x = 1, y = 0.9, color = "darkblue", size = 4) +
-  geom_text(aes(label = 'D:5'), x = 1, y = -0.03, color = "darkblue", size = 4) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "blue", size = 0.5) +
-  geom_hline(yintercept = 0.05, color = "darkred", size = 0.6,linetype = "dashed") +
-  geom_vline(xintercept = 0.05, color = "darkred", size = 0.6,linetype = "dashed") +
-  theme_minimal()+
-  theme(plot.title = element_text(hjust = 0.5))
-```
-
-**Creation of regions for each factor**
-
-```{r}
-#Interaction regions
-df_inter=data.frame(inter=df_graph$inter,
-                    inter_2=df_graph$inter_2)
-
-df_inter <- df_inter %>%
-  mutate(region = case_when(
-    df_inter$inter>0.05&df_inter$inter_2<0.05~ 'A',
-    df_inter$inter>0.05&df_inter$inter_2>0.05 ~ 'B',
-    df_inter$inter<0.05&df_inter$inter_2<0.05 ~ 'C',
-    df_inter$inter<0.05&df_inter$inter_2>0.05 ~ 'D',
-    TRUE ~ 'F'  # Valor por defecto si ninguna condición se cumple
-  ))
-
-table(df_inter$region)
-```
-
-```{r}
-#Nitrogen regions
-df_nitro=data.frame(nitro=df_graph$nitro,
-                    nitro_2=df_graph$nitro_2)
-
-df_nitro <- df_nitro %>%
-  mutate(region = case_when(
-    df_nitro$nitro>0.05&df_nitro$nitro_2<0.05~ 'A',
-    df_nitro$nitro>0.05&df_nitro$nitro_2>0.05 ~ 'B',
-    df_nitro$nitro<0.05&df_nitro$nitro_2<0.05 ~ 'C',
-    df_nitro$nitro<0.05&df_nitro$nitro_2>0.05 ~ 'D',
-    TRUE ~ 'F'))
-
-table(df_nitro$region)
-```
-
-```{r}
-#Water regions
-df_water=data.frame(water=df_graph$water,
-                    water_2=df_graph$water_2)
-
-df_water <- df_water %>%
-  mutate(region = case_when(
-    df_water$water>0.05&df_water$water_2<0.05~ 'A',
-    df_water$water>0.05&df_water$water_2>0.05 ~ 'B',
-    df_water$water<0.05&df_water$water_2<0.05 ~ 'C',
-    df_water$water<0.05&df_water$water_2>0.05 ~ 'D',
-    TRUE ~ 'F'))
-
-table(df_water$region)
-```
-
-```{r}
-# Extract the nitrogen regions
-zone_A=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_nitro[i,1]>=j&df_nitro[i,2]<j){
-    lis=c(lis,df_nitro[i,3])}
-  }
-  zone_A=c(zone_A,length(lis))
-}
-
-zone_B=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_nitro[i,1]>=j&df_nitro[i,2]>=j){
-    lis=c(lis,df_nitro[i,3])}
-  }
-  zone_B=c(zone_B,length(lis))
-}
-
-zone_C=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_nitro[i,1]<j&df_nitro[i,2]<j){
-    lis=c(lis,df_nitro[i,3])}
-  }
-  zone_C=c(zone_C,length(lis))
-}
-
-zone_D=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_nitro[i,1]<j&df_nitro[i,2]>=j){
-    lis=c(lis,df_nitro[i,3])}
-  }
-  zone_D=c(zone_D,length(lis))
-}
-
-#New dataframe is created where the regions for Nitrogen will be stored.
-
-d_alpha_nitro <- data.frame(
-  x = rep(seq(0.001, 0.1, 0.001), 4),
-  y = c(zone_D, zone_C, zone_A, zone_B),
-  zone = rep(c("Region D", "Region C", "Region A", "Region B"), each = length(seq(0.001, 0.1, 0.001)))
-)
-
-# Create the graph using ggplot
-
-ggplot(d_alpha_nitro, aes(x = x, y = y, color = zone)) +
-  geom_line(size = 1) +
-  geom_point(data = d_alpha_nitro[d_alpha_nitro$x == 0.05, ], aes(x = x, y = y), color = "black", size = 2) + 
-  scale_y_continuous(limits = c(0, 1350), breaks = seq(0, 2151, by = 200)) +
-  scale_x_continuous(breaks = seq(0, 0.1, by = 0.01)) +
-  labs(title = "Regions in nitrogen", y = "Confusion matrix counts", x = expression(alpha~"-Dynamic ")) +
-  theme_minimal() +
-  theme(legend.position = "top",
-        plot.title = element_text(hjust = 0.5),
-        legend.margin = margin(0,0,-35,0)) +
-  guides(color = guide_legend(title = NULL)) +
-  scale_color_manual(values = c("Region D" = "blue", "Region C" = "red", "Region A" = "green", "Region B" = "purple"))
-
-```
-
-```{r}
-# Extract the water regions
-
-zone_A=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_water[i,1]>=j&df_water[i,2]<j){
-    lis=c(lis,df_water[i,3])}
-  }
-  zone_A=c(zone_A,length(lis))
-}
-
-zone_B=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_water[i,1]>=j&df_water[i,2]>=j){
-    lis=c(lis,df_water[i,3])}
-  }
-  zone_B=c(zone_B,length(lis))
-}
-
-zone_C=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_water[i,1]<j&df_water[i,2]<j){
-    lis=c(lis,df_water[i,3])}
-  }
-  zone_C=c(zone_C,length(lis))
-}
-
-zone_D=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_water[i,1]<j&df_water[i,2]>=j){
-    lis=c(lis,df_water[i,3])}
-  }
-  zone_D=c(zone_D,length(lis))
-}
-
-# New dataframe is created where the regions for Water will be stored.
-
-d_alpha_water <- data.frame(
-  x = rep(seq(0.001, 0.1, 0.001), 4),
-  y = c(zone_D, zone_C, zone_A, zone_B),
-  zone = rep(c("Region D", "Region C", "Region A", "Region B"), each = length(seq(0.001, 0.1, 0.001)))
-)
-
-# Create the graph using ggplot
-
-ggplot(d_alpha_water, aes(x = x, y = y, color = zone)) +
-  geom_line(size = 1) +
-  geom_point(data = d_alpha_water[d_alpha_water$x == 0.05, ], aes(x = x, y = y), color = "black", size = 2) + 
-  scale_y_continuous(limits = c(0, 2200), breaks = seq(0, 2151, by = 200)) +
-  scale_x_continuous(breaks = seq(0, 0.1, by = 0.01)) +
-  labs(title = "Regions in hydric stress", y = "", x = expression(alpha~"-Dynamic ")) +
-  theme_minimal() +
-  theme(legend.position = "top",plot.title = element_text(hjust = 0.5),
-        legend.margin = margin(0,0,-25,15),
-        legend.text = element_text(size = 6)) +
-  guides(color = guide_legend(title = NULL)) +
-  scale_color_manual(values = c("Region D" = "blue", "Region C" = "red", "Region A" = "green", "Region B" = "purple"))
-
-
-```
-
-```{r}
-# Extract the interaction regions
-
-zone_A=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_inter[i,1]>=j&df_inter[i,2]<j){
-    lis=c(lis,df_inter[i,3])}
-  }
-  zone_A=c(zone_A,length(lis))
-}
-
-zone_B=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_inter[i,1]>=j&df_inter[i,2]>=j){
-    lis=c(lis,df_inter[i,3])}
-  }
-  zone_B=c(zone_B,length(lis))
-}
-
-zone_C=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_inter[i,1]<j&df_inter[i,2]<j){
-    lis=c(lis,df_inter[i,3])}
-  }
-  zone_C=c(zone_C,length(lis))
-}
-
-zone_D=c()
-for (j in seq(0.001,0.1,0.001)) {
-  lis=c()
-  for (i in seq(1,2151)) {
-    if(df_inter[i,1]<j&df_inter[i,2]>=j){
-    lis=c(lis,df_inter[i,3])}
-  }
-  zone_D=c(zone_D,length(lis))
-}
-
-# New dataframe is created where the regions for Interaction will be stored.
-
-d_alpha_inter<- data.frame(
-  x = rep(seq(0.001, 0.1, 0.001), 4),
-  y = c(zone_D, zone_C, zone_A, zone_B),
-  zone = rep(c("Region D", "Region C", "Region A", "Region B"), each = length(seq(0.001, 0.1, 0.001)))
-)
-
-# Create the graph using ggplot
-
-ggplot(d_alpha_inter, aes(x = x, y = y, color = zone)) +
-  geom_line(size = 1) +
-  geom_point(data = d_alpha_inter[d_alpha_inter$x == 0.05, ], aes(x = x, y = y), color = "black", size = 2) + 
-  scale_y_continuous(limits = c(0, 2200), breaks = seq(0, 2151, by = 200)) +
-  scale_x_continuous(breaks = seq(0, 0.1, by = 0.01)) +
-  labs(title = "Regions in interaction", y = "Confusion matrix counts", x = expression(alpha~"-Dynamic ")) +
-  theme_minimal() +
-  theme(legend.position = "top",plot.title = element_text(hjust = 0.5),
-        legend.margin = margin(0,0,-25,15),
-        legend.text = element_text(size = 6)) +
-  guides(color = guide_legend(title = NULL)) +
-  scale_color_manual(values = c("Region D" = "blue", "Region C" = "red", "Region A" = "green", "Region B" = "purple"))
-
-```
-
-**Graphing of reflectances for treatments**
-
-```{r}
-df2=df
-
-df2$treat=interaction(df$NITROGEN,df$WATER)
-df2=df2[,-c(1,2)]
-
-df2=df2 %>%
-  group_by(treat) %>%
-  summarise_all(.funs = list(mean = mean), na.rm = TRUE)
-
-df2=df2%>% 
-  pivot_longer(cols=-treat,names_to = 'Bands')
-
-df2= df2%>%
-  mutate(Bands = gsub("_mean","", df2$Bands))
-
-df2$Bands <- factor(df2$Bands, levels = unique(df2$Bands))
-
-df2$treat=as.factor(df2$treat)
-
-colnames(df2)[1]='Treatment'
-
-df2%>%
-  ggplot() +
-  geom_rect(aes(NULL,NULL,xmin=450-350,xmax=495-350),
-            ymin=0,ymax=1, colour="white",fill='#CCCCCC', size=0.1, alpha=0.06) +
-  geom_rect(aes(NULL,NULL,xmin=530-350,xmax=600-350),
-            ymin=0,ymax=1, colour="white",fill='#CCCCCC', size=0.1, alpha=0.06) +
-  geom_rect(aes(NULL,NULL,xmin=620-350,xmax=1390-350),
-            ymin=0,ymax=1, colour="white",fill='#CCCCCC', size=0.1, alpha=0.06) +
-  geom_rect(aes(NULL,NULL,xmin=760-350,xmax=1400-350),
-            ymin=0,ymax=1, colour="white",fill='#CCCCCC', size=0.1, alpha=0.06) +
-  geom_rect(aes(NULL,NULL,xmin=1410-350,xmax=1950-350),
-            ymin=0,ymax=1, colour="white",fill='#CCCCCC', size=0.1, alpha=0.06) +
-  geom_line(aes(x = Bands, y = value, group =Treatment, color = Treatment)) +
-  geom_text(aes(x=150, y = 0.6,label='Blue'), vjust = -0.5, size = 3, color = "black", angle = 90) +
-  geom_text(aes(x=250, y = 0.6,label='Green'), vjust = -0.5, size = 3, color = "black", angle = 90) +
-  geom_text(aes(x=360, y = 0.6,label='Red'), vjust = -0.5, size = 3, color = "black", angle = 90) +
-  geom_text(aes(x=770, y = 0.6,label='Near-infrared'), vjust = -0.5, size = 3, color = "black", angle = 90) +
-  geom_text(aes(x=1340, y = 0.6,label='Mid-infrared'), vjust = -0.5, size = 3, color = "black", angle = 90) +
-  labs(x = "Wavelength (nm)", y = "Mean Spectral Reflectance") +
-  scale_x_discrete(breaks = unique(df2$Bands)[seq(1, length(unique(df2$Bands)), by = 100)])+
-  theme_minimal()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
-        plot.title = element_text(hjust = 0.5),
-        legend.position = 'right',
-        legend.text = element_text(size = 6),
-        legend.title = element_text(size = 8),
-        legend.margin = margin(0, 0, 120, -45))
-```
-
-**Graphing of reflectances for Nitrogen levels**
-
-```{r}
-df_nit=df[,-c(2)]
-
-df_nit=df_nit %>%
-  group_by(NITROGEN) %>%
-  summarise_all(.funs = list(mean = mean), na.rm = TRUE)
-
-df_nit=df_nit%>% 
-  pivot_longer(cols=-NITROGEN,names_to = 'Bands')
-
-df_nit= df_nit%>%
-  mutate(Bands = gsub("_mean","", df_nit$Bands))
-
-df_nit$Bands <- factor(df_nit$Bands, levels = unique(df_nit$Bands))
-df_nit$NITROGENO=as.factor(df_nit$NITROGEN)
-
-colnames(df_nit)[1]='Nitrogen'
-df_nit%>%
-  ggplot() +
-  geom_line(aes(x = Bands, y = value, group =Nitrogen, color = Nitrogen)) +
-  labs(x = "Wavelength (nm)", y = "Mean Spectral Reflectance") +
-  scale_x_discrete(breaks = unique(df_nit$Bands)[seq(1, length(unique(df_nit$Bands)), by = 100)])+
-  theme_minimal()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
-        plot.title = element_text(hjust = 0.5),
-        legend.position = 'right',
-        legend.margin = margin(0,0,180,-45))
-```
-
-**Graphing of reflectances for Water levels**
-
-```{r}
-df_wat=df[,-c(1)]
-df_wat=df_wat %>%
-  group_by(WATER) %>%
-  summarise_all(.funs = list(mean = mean), na.rm = TRUE)
-
-df_wat=df_wat%>% 
-  pivot_longer(cols=-WATER,names_to = 'Bandas')
-
-df_wat= df_wat%>%
-  mutate(Bandas = gsub("_mean","", df_wat$Bandas))
-
-df_wat$Bandas <- factor(df_wat$Bandas, levels = unique(df_wat$Bandas))
-df_wat$WATER=as.factor(df_wat$WATER)
-colnames(df_wat)[1]='Stress'
-
-df_wat%>%
-  ggplot()+
-  geom_line(aes(x = Bandas, y = value, group =Stress, color = Stress)) +
-  labs(x = "Wavelength (nm)", y = "") +
-  scale_x_discrete(breaks = unique(df_wat$Bandas)[seq(1, length(unique(df_wat$Bandas)), by = 100)])+
-  theme_minimal()+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.6, hjust=1),
-        plot.title = element_text(hjust = 0.5),
-        legend.position = 'right',
-        legend.margin = margin(0,0,214,-45))
 ```
